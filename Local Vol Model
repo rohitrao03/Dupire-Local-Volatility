@@ -1,0 +1,213 @@
+
+import numpy as np
+from scipy.interpolate import RectBivariateSpline
+from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, CubicSpline
+from scipy.interpolate import interp2d
+from scipy.interpolate import griddata
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.interpolate 
+
+import numpy as np
+from scipy import interpolate
+from scipy.ndimage import binary_erosion
+# def calculate_local_volatility(strikes, expiries, implied_vols):
+#     # Grid dimensions
+import plotly.express as px
+
+    
+
+IV= pd.read_excel(r'path',index_col = None)
+
+spot = 124.93
+
+ImpFwd = pd.read_excel(r'path',sheet_name = 'Sheet4')['ImpFwd']
+ImpFwd=ImpFwd.dropna()
+strikes = list(pd.read_excel(r'path',sheet_name = 'Sheet4')['Strike'])
+
+interpolation_length = 1000
+
+strikes= np.linspace(strikes[0], strikes[-1], interpolation_length)
+
+reference_date = pd.to_datetime('2023-01-05')
+
+expiries = list(( IV['Time/Strikes'] - reference_date).dt.days)
+expiries = np.array(expiries)/252
+
+moneyness = np.array(IV.columns)[1:]
+
+implied_vols=np.array(IV.drop('Time/Strikes',axis=1))
+implied_vols = implied_vols*0.01
+
+log_moneyness = np.zeros((len(expiries),len(implied_vols[0])))
+#log_moneyness for local vol is log(strike/ImpFwd) and moneyness above is strike/spot
+
+strike = moneyness*spot
+
+for i in range(len(expiries)):
+    for j in range(len(implied_vols[0])):
+        log_moneyness[i][j] = np.log(strike[j]/ImpFwd[i])
+
+# y = np.log(np.array(moneyness)*np.divide(spot,ImpFwd))
+
+i=0
+interp_func=[]
+
+for i in range(len(implied_vols)):
+    interp_func.append(interp1d(x=log_moneyness[i], y=implied_vols[i], kind='cubic', bounds_error=False, fill_value="extrapolate",axis = 0))
+    
+    
+# interp_func = interp1d(x=y, y=implied_vols, kind='cubic', bounds_error=False, fill_value="extrapolate",axis = 1)
+
+# moneyness = np.linspace(y[0], y[-1], 100)
+interpolated_log_moneyness = [np.linspace(log_moneyness[i][0], log_moneyness[i][-1], interpolation_length) for i in range(len(log_moneyness))]
+interpolated_log_moneyness=np.array(interpolated_log_moneyness)
+
+# implied_vols=interp_func(moneyness)
+
+implied_vols_interpolated=[]
+
+for i in range(len(implied_vols)):
+    implied_vols_interpolated.append(interp_func[i](interpolated_log_moneyness[i]))
+implied_vols_interpolated = np.array(implied_vols_interpolated)
+
+#total implied variance
+
+
+
+w_matrix =  (implied_vols_interpolated**2) * np.array(expiries)[:, None]
+
+
+interp_func2 = interp1d(x=expiries, y=w_matrix, kind='linear', bounds_error=False, fill_value="extrapolate",axis = 0)
+interpolated_expiries = np.linspace(expiries[0], expiries[-1], interpolation_length)
+w_matrix=interp_func2(interpolated_expiries)
+
+
+#interpolation to make interpolated log moneyness have same expiries as w_matrix
+
+interp_func3 = interp1d(x=expiries, y=interpolated_log_moneyness, kind='linear', bounds_error=False, fill_value="extrapolate",axis = 0)
+interpolated_log_moneyness=interp_func3(interpolated_expiries)
+
+
+
+
+
+dt=np.mean(np.gradient(interpolated_expiries))
+
+dy=[]
+for i in range(len(interpolated_log_moneyness)):
+    dy.append(np.gradient(interpolated_log_moneyness[i]))
+dy=np.mean(dy)
+    
+    
+dw_dy = np.zeros((len(w_matrix),len(w_matrix[0])))
+d2w_dy2 = np.zeros((len(w_matrix),len(w_matrix[0])))
+dw_dt = np.zeros((len(w_matrix),len(w_matrix[0])))
+
+
+for i in range(len(w_matrix)):
+    for j in range(len(w_matrix[0])):
+        if j==len(w_matrix[0])-1:
+            dw_dy[i,j] = (w_matrix[i,j]- w_matrix[i,j-1])/(dy)
+        elif j==0:
+            dw_dy[i,j] = (w_matrix[i,j+1]- w_matrix[i,j])/(dy)   
+        else: 
+            dw_dy[i,j] = (w_matrix[i,j+1]- w_matrix[i,j-1])/(2*dy)
+        
+
+for i in range(len(w_matrix)):
+    for j in range(len(w_matrix[0])):
+        if i==len(w_matrix)-1:
+            dw_dt[i,j] = (w_matrix[i,j]- w_matrix[i-1,j])/(dt)
+        elif i==0:
+            dw_dt[i,j] = (w_matrix[i+1,j]- w_matrix[i,j])/(dt) 
+        else:
+            dw_dt[i,j] = (w_matrix[i+1,j]- w_matrix[i-1,j])/(dt)
+
+
+for i in range(len(w_matrix)):
+    for j in range(len(w_matrix[0])):
+        if j==0 or j==len(w_matrix[0])-1:
+            d2w_dy2[i,j] = 0
+        else:
+            d2w_dy2[i,j] = (w_matrix[i,j+1]- 2*w_matrix[i,j] +w_matrix[i,j-1])/(dy**2)
+        
+            
+
+
+
+# # Apply the Dupire formula to calculate local volatility
+
+# dw_dy=np.gradient(w_matrix,moneyness,axis = 1)
+
+# dw_dt=np.gradient(w_matrix,expiries,axis = 0)
+# d2w_dy2 = np.gradient(dw_dy,moneyness,axis = 1)
+
+
+
+    
+# w=implied_vols
+w=w_matrix
+y =interpolated_log_moneyness
+
+
+
+
+local_variance= dw_dt/(1 - (y / w) * dw_dy + 1/4 * (-1/4 - 1/w + y**2/w**2) * (dw_dy)**2 + 1/2 * d2w_dy2)
+
+
+
+#calendar arbitrage
+for i in range(len(dw_dt)):
+    for j in range(len(dw_dt[0])):
+        if dw_dt[i,j]<0:
+            local_variance[i,j] = (0.01)**2
+
+#Butterfly arbitrage
+for i in range(len(local_variance)):
+    for j in range(len(local_variance[0])):
+        
+        if local_variance[i,j]<0:
+            local_variance[i,j] = dw_dt[i,j]
+
+
+            
+local_volatility = np.sqrt(local_variance)
+
+k=np.mean(local_volatility)+2*np.std(local_volatility)
+
+
+for i in range(len(local_volatility)):
+    for j in range(len(local_volatility[0])):
+        if local_volatility[i,j]>k:
+            local_volatility[i,j] =min(local_volatility[i,j-1],local_volatility[i-1,j])
+            
+for i in range(len(local_volatility)):
+    for j in range(len(local_volatility[0])):
+        if local_volatility[i,j]>k:
+            print(i,j)
+
+result_array = local_volatility[:, 1:-1]
+
+
+
+
+import plotly.graph_objects as go
+# Create a 3D surface plot
+strikes = strikes[1:-1]
+fig = go.Figure(data=[go.Surface(z=result_array, x=interpolated_expiries, y=strikes)])
+# Customize hover text
+hover_text = np.around(result_array, decimals=2)  # Rounding the Z values for hover text
+fig.data[0].text = hover_text
+
+# Add axis labels
+fig.update_layout(scene=dict(xaxis_title='Expiry', yaxis_title='Strikes', zaxis_title='Local Vol'))
+# Set the title
+fig.update_layout(title='3D Surface Plot with Hover')
+
+# Show the plot
+fig.show()
+
+fig.write_html(r'path.html')
